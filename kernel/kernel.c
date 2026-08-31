@@ -1,5 +1,5 @@
 /* =============================================================================
- * SENG21213-OS :: Main Kernel (Stage 1 – Process Management & Scheduling)
+ * SENG21213-OS :: Main Kernel (Stage 2 – Threads & Synchronization)
  * File   : kernel/kernel.c
  * ============================================================================*/
 
@@ -9,6 +9,9 @@
 #include "pit.h"
 #include "process.h"
 #include "scheduler.h"
+#include "thread.h"
+#include "mutex.h"
+#include "semaphore.h"
 #include "../include/types.h"
 
 static void cmd_help(void);
@@ -21,8 +24,14 @@ static void cmd_halt(void);
 static void cmd_mem(void);
 static void cmd_ps(void);
 static void cmd_kill(const char *args);
+static void cmd_threads(void);
 static void cmd_demo(void);
+static void cmd_mutex_demo(void);
+static void cmd_prodcon(void);
 
+/* ---------------------------------------------------------------------------
+ * String utilities
+ * --------------------------------------------------------------------------*/
 static int k_strcmp(const char *a, const char *b) {
     while (*a && (*a == *b)) { a++; b++; }
     return (uint8_t)*a - (uint8_t)*b;
@@ -56,92 +65,168 @@ static int k_atoi(const char **str) {
     return val;
 }
 
+/* ---------------------------------------------------------------------------
+ * Splash screen
+ * --------------------------------------------------------------------------*/
 static void print_splash(void) {
     vga_clear(VGA_BLACK);
-
     vga_draw_box(0, 0, 7, 80, VGA_LIGHT_MAGENTA);
 
     vga_set_cursor(1, 2);
     vga_puts_color("  SENG21213-OS  |  Computer Architecture & Operating Systems",
                    VGA_YELLOW, VGA_BLACK);
-
     vga_set_cursor(2, 2);
-    vga_puts_color("  Stage 1: Process Table & Round-Robin Scheduler (v0.2-stage1)",
+    vga_puts_color("  Stage 2: Kernel Threads & Synchronization (v0.3-stage2)",
                    VGA_LIGHT_CYAN, VGA_BLACK);
-
     vga_set_cursor(3, 2);
     vga_puts_color("  Faculty of Engineering – Department of Software Engineering",
                    VGA_LIGHT_GREY, VGA_BLACK);
-
     vga_set_cursor(4, 2);
-    vga_puts_color("  Type 'help' for commands, 'ps' to see processes, 'demo' to test.",
+    vga_puts_color("  Commands: help | ps | threads | demo | mutex-demo | prodcon",
                    VGA_LIGHT_GREEN, VGA_BLACK);
-
     vga_set_cursor(5, 2);
-    vga_puts_color("  PIT: 100 Hz Timer (IRQ0)  |  Scheduler: Round-Robin (20ms quantum)",
+    vga_puts_color("  Sync: mutex_t (spinlock) | semaphore_t (counting)",
                    VGA_DARK_GREY, VGA_BLACK);
 
     vga_set_cursor(8, 0);
     vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    vga_puts("  [  OK  ] GDT 32-bit Protected Mode active\n");
-    vga_puts("  [  OK  ] VGA driver initialized at 0xB8000\n");
-    vga_puts("  [  OK  ] IDT and 8259 PIC remapped (Vectors 32-47)\n");
-    vga_puts("  [  OK  ] i8253 PIT timer configured at 100 Hz (IRQ0)\n");
-    vga_puts("  [  OK  ] Round-Robin process scheduler active\n\n");
+    vga_puts("  [  OK  ] IDT, 8259 PIC, i8253 PIT @ 100 Hz (IRQ0)\n");
+    vga_puts("  [  OK  ] Round-Robin process scheduler active\n");
+    vga_puts("  [  OK  ] Kernel thread system initialized\n");
+    vga_puts("  [  OK  ] Mutex (xchg spinlock) + Counting Semaphore ready\n\n");
 }
 
+/* ---------------------------------------------------------------------------
+ * Stage 1 demo workers (process-based)
+ * --------------------------------------------------------------------------*/
 static void worker1_task(void) {
-    for (int i = 0; i < 10; i++) {
-        vga_puts_color(" [W1] ", VGA_LIGHT_CYAN, VGA_BLACK);
-        pit_sleep(20);
+    for (int i = 0; i < 8; i++) {
+        vga_puts_color(" [P1] ", VGA_LIGHT_CYAN, VGA_BLACK);
+        pit_sleep(25);
     }
-    vga_puts_color(" [Worker 1 Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    vga_puts_color(" [P1 Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
     process_exit();
 }
 
 static void worker2_task(void) {
-    for (int i = 0; i < 10; i++) {
-        vga_puts_color(" [W2] ", VGA_LIGHT_MAGENTA, VGA_BLACK);
-        pit_sleep(30);
+    for (int i = 0; i < 8; i++) {
+        vga_puts_color(" [P2] ", VGA_YELLOW, VGA_BLACK);
+        pit_sleep(35);
     }
-    vga_puts_color(" [Worker 2 Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    vga_puts_color(" [P2 Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
     process_exit();
 }
 
+/* ---------------------------------------------------------------------------
+ * Stage 2: Thread demos
+ * --------------------------------------------------------------------------*/
+
+/* --- Mutex demo: shared counter without/with protection --- */
+static volatile int shared_counter = 0;
+static mutex_t      counter_mutex;
+
+static void counter_thread_safe(void) {
+    for (int i = 0; i < 5; i++) {
+        mutex_lock(&counter_mutex);
+        int tmp = shared_counter;
+        pit_sleep(1); /* Simulate work inside critical section */
+        shared_counter = tmp + 1;
+        mutex_unlock(&counter_mutex);
+        thread_yield();
+    }
+    vga_puts_color(" [T:safe-done] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    thread_exit();
+}
+
+/* --- Producer-Consumer using semaphore --- */
+#define BUFFER_SIZE 4
+
+static volatile int  pc_buffer[BUFFER_SIZE];
+static volatile int  pc_head   = 0;
+static volatile int  pc_tail   = 0;
+static semaphore_t   sem_empty;  /* Slots available for producer */
+static semaphore_t   sem_full;   /* Items available for consumer */
+static mutex_t       pc_mutex;
+
+static void producer_thread(void) {
+    for (int i = 1; i <= 6; i++) {
+        sem_wait(&sem_empty);
+        mutex_lock(&pc_mutex);
+
+        pc_buffer[pc_head] = i;
+        pc_head = (pc_head + 1) % BUFFER_SIZE;
+        vga_printf(" [PROD:%d] ", i);
+
+        mutex_unlock(&pc_mutex);
+        sem_signal(&sem_full);
+
+        pit_sleep(15);
+    }
+    vga_puts_color(" [Producer Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    thread_exit();
+}
+
+static void consumer_thread(void) {
+    for (int i = 0; i < 6; i++) {
+        sem_wait(&sem_full);
+        mutex_lock(&pc_mutex);
+
+        int item = pc_buffer[pc_tail];
+        pc_tail = (pc_tail + 1) % BUFFER_SIZE;
+        vga_printf(" [CONS:%d] ", item);
+
+        mutex_unlock(&pc_mutex);
+        sem_signal(&sem_empty);
+
+        pit_sleep(20);
+    }
+    vga_puts_color(" [Consumer Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    thread_exit();
+}
+
+/* ---------------------------------------------------------------------------
+ * Shell command implementations
+ * --------------------------------------------------------------------------*/
 static void cmd_help(void) {
-    vga_puts_color("\n  SENG21213-OS Shell Commands (Stage 1)\n", VGA_YELLOW, VGA_BLACK);
-    vga_puts("  ─────────────────────────────────────────────────────────\n");
+    vga_puts_color("\n  SENG21213-OS Shell Commands (Stage 2)\n", VGA_YELLOW, VGA_BLACK);
+    vga_puts("  ──────────────────────────────────────────────────────────────\n");
     vga_puts("  help             – Show this help message\n");
     vga_puts("  clear            – Clear the screen\n");
     vga_puts("  echo <text>      – Echo text to screen\n");
     vga_puts("  version          – Print OS kernel version\n");
     vga_puts("  colour <fg> <bg> – Set text colours (0-15)\n");
     vga_puts("  halt             – Halt CPU\n");
-    vga_puts("  ps               – [Stage 1] List all processes and states\n");
-    vga_puts("  kill <pid>       – [Stage 1] Terminate a process\n");
-    vga_puts("  demo             – [Stage 1] Launch concurrent worker processes\n");
-    vga_puts("  about            – About this OS and course\n");
+    vga_puts("  about            – About this OS\n");
     vga_puts("  mem              – Memory map info\n");
-    vga_puts_color("\n  Upcoming Milestones (Stages 2–4):\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  threads          – [Stage 2] Kernel threads & synchronization\n");
-    vga_puts("  meminfo          – [Stage 3] Physical page frame manager\n");
+    vga_puts_color("\n  Stage 1 – Processes:\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ps               – List all processes\n");
+    vga_puts("  kill <pid>       – Terminate a process\n");
+    vga_puts("  demo             – Run concurrent process demo\n");
+    vga_puts_color("\n  Stage 2 – Threads & Sync:\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  threads          – List all kernel threads\n");
+    vga_puts("  mutex-demo       – Demonstrate mutex protecting a shared counter\n");
+    vga_puts("  prodcon          – Producer-Consumer semaphore demo\n");
+    vga_puts_color("\n  Upcoming:\n", VGA_DARK_GREY, VGA_BLACK);
+    vga_puts("  meminfo          – [Stage 3] Physical memory manager\n");
     vga_puts("  ls / touch / cat – [Stage 4] RAM-disk file system\n\n");
 }
 
-static void cmd_clear(void) {
-    vga_clear(VGA_BLACK);
-}
+static void cmd_clear(void)  { vga_clear(VGA_BLACK); }
 
 static void cmd_about(void) {
-    vga_puts_color("\n  About SENG21213-OS\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts_color("\n  About SENG21213-OS (Stage 2)\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  ─────────────────────────────────────────────\n");
     vga_puts("  Architecture : x86 (i686), 32-bit Protected Mode\n");
-    vga_puts("  Scheduler    : Preemptive Round-Robin (100 Hz PIT timer)\n");
-    vga_puts("  Processes    : PCB Table (16 tasks, 4 KB dedicated stacks)\n");
-    vga_puts("  Bootloader   : Custom MBR (NASM)\n");
-    vga_puts("  Kernel       : Freestanding C (GCC, no libc)\n");
-    vga_puts("  VM Target    : QEMU (qemu-system-i386)\n");
-    vga_puts("  Course       : SENG 21213 – Computer Architecture & OS\n\n");
+    vga_puts("  Processes    : Round-Robin PCB table (16 slots, 4 KB stacks)\n");
+    vga_puts("  Threads      : Kernel threads (16 slots, 4 KB stacks each)\n");
+    vga_puts("  Synchronization: mutex_t (XCHG spinlock), semaphore_t (counting)\n");
+    vga_puts("  Timer        : i8253 PIT @ 100 Hz (IRQ0)\n\n");
+}
+
+static void cmd_version(void) {
+    vga_puts_color("\n  SENG21213-OS v0.3-stage2\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  Stage 2: Kernel Threads & Synchronization\n");
+    vga_puts("  Mutex (XCHG spinlock) + Counting Semaphore\n\n");
 }
 
 static void cmd_echo(const char *args) {
@@ -150,27 +235,17 @@ static void cmd_echo(const char *args) {
     vga_puts("\n");
 }
 
-static void cmd_version(void) {
-    vga_puts_color("\n  SENG21213-OS v0.2-stage1\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  Stage 1: Process Table & Round-Robin Scheduler\n");
-    vga_puts("  Architecture : x86 (i686) 32-bit Protected Mode\n\n");
-}
-
 static void cmd_colour(const char *args) {
     const char *p = k_ltrim(args);
     if (!*p) {
         vga_puts_color("  Usage: colour <fg 0-15> <bg 0-15>\n", VGA_YELLOW, VGA_BLACK);
-        vga_puts("  Example: colour 14 0 (Yellow on Black)\n");
         return;
     }
     int fg = k_atoi(&p);
     p = k_ltrim(p);
-    int bg = 0;
-    if (*p) {
-        bg = k_atoi(&p);
-    }
+    int bg = *p ? k_atoi(&p) : 0;
     if (fg < 0 || fg > 15 || bg < 0 || bg > 15) {
-        vga_puts_color("  Colours must be in range 0-15.\n", VGA_LIGHT_RED, VGA_BLACK);
+        vga_puts_color("  Colours must be 0-15.\n", VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
     vga_set_color((vga_color_t)fg, (vga_color_t)bg);
@@ -178,23 +253,22 @@ static void cmd_colour(const char *args) {
 }
 
 static void cmd_halt(void) {
-    vga_puts_color("\n  System halted. It is now safe to power off.\n", VGA_LIGHT_RED, VGA_BLACK);
+    vga_puts_color("\n  System halted.\n", VGA_LIGHT_RED, VGA_BLACK);
     __asm__ __volatile__("cli; hlt");
     while (1) { __asm__ __volatile__("hlt"); }
 }
 
 static void cmd_mem(void) {
     vga_puts_color("\n  Memory Map\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  ─────────────────────────────────────────────\n");
-    vga_puts("  0x00000000 – 0x000FFFFF  :  First 1 MB (reserved/BIOS/VGA)\n");
-    vga_puts("  0x00010000               :  Kernel Entry Point (0x10000)\n");
-    vga_puts("  0x00090000               :  Kernel Main Stack Base\n");
-    vga_puts("  0x00100000 – 0x00EFFFFF  :  Extended Memory (Usable)\n");
-    vga_puts("  0x000B8000               :  VGA Video Buffer\n\n");
+    vga_puts("  0x00000000 – 0x000FFFFF  :  First 1 MB (BIOS/VGA)\n");
+    vga_puts("  0x00010000               :  Kernel entry (0x10000)\n");
+    vga_puts("  0x00090000               :  Kernel stack base\n");
+    vga_puts("  0x000B8000               :  VGA text buffer\n");
+    vga_puts("  0x00100000 – 0x01FFFFFF  :  Extended memory (~30 MB usable)\n\n");
 }
 
-static const char *state_to_str(proc_state_t st) {
-    switch (st) {
+static const char *proc_state_str(proc_state_t s) {
+    switch (s) {
         case PROC_READY:      return "READY";
         case PROC_RUNNING:    return "RUNNING";
         case PROC_BLOCKED:    return "BLOCKED";
@@ -209,16 +283,16 @@ static void cmd_ps(void) {
     vga_puts("  ──────────────────────────────────────────\n");
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (table[i].state != PROC_UNUSED) {
+            const char *st = proc_state_str(table[i].state);
             vga_printf("  %d     ", table[i].pid);
-            const char *st = state_to_str(table[i].state);
             vga_puts(st);
-            int st_len = k_strlen(st);
-            for (int s = 0; s < 13 - st_len; s++) vga_putchar(' ');
+            int sl = k_strlen(st);
+            for (int s = 0; s < 13 - sl; s++) vga_putchar(' ');
             vga_printf("%d", table[i].ticks);
-            int ticks_len = 1;
+            int tl = 1;
             uint32_t t = table[i].ticks;
-            while (t >= 10) { ticks_len++; t /= 10; }
-            for (int s = 0; s < 8 - ticks_len; s++) vga_putchar(' ');
+            while (t >= 10) { tl++; t /= 10; }
+            for (int s = 0; s < 8 - tl; s++) vga_putchar(' ');
             vga_printf("%s\n", table[i].name);
         }
     }
@@ -227,30 +301,90 @@ static void cmd_ps(void) {
 
 static void cmd_kill(const char *args) {
     const char *p = k_ltrim(args);
-    if (!*p) {
-        vga_puts_color("  Usage: kill <pid>\n", VGA_YELLOW, VGA_BLACK);
-        return;
-    }
+    if (!*p) { vga_puts_color("  Usage: kill <pid>\n", VGA_YELLOW, VGA_BLACK); return; }
     int pid = k_atoi(&p);
     process_kill((uint32_t)pid);
 }
 
-static void cmd_demo(void) {
-    vga_puts_color("\n  [Stage 1 Demo] Spawning 2 concurrent processes...\n", VGA_YELLOW, VGA_BLACK);
-    vga_puts("  - worker1: prints [W1] every 200 ms\n");
-    vga_puts("  - worker2: prints [W2] every 300 ms\n");
-    vga_puts("  They run concurrently alongside this interactive shell.\n");
-    vga_puts("  Type 'ps' while they run to observe tick counts advancing!\n\n");
-
-    process_create("worker1", worker1_task);
-    process_create("worker2", worker2_task);
+static const char *thr_state_str(thread_state_t s) {
+    switch (s) {
+        case THREAD_READY:      return "READY";
+        case THREAD_RUNNING:    return "RUNNING";
+        case THREAD_BLOCKED:    return "BLOCKED";
+        case THREAD_TERMINATED: return "TERMINATED";
+        default:                return "UNUSED";
+    }
 }
 
-static char  shell_buf[256];
-static char  prompt[] = "\n  ksh> ";
+static void cmd_threads(void) {
+    thread_t *table = thread_get_table();
+    vga_puts_color("\n  TID   STATE        TICKS   NAME\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ──────────────────────────────────────────\n");
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (table[i].state != THREAD_UNUSED) {
+            const char *st = thr_state_str(table[i].state);
+            vga_printf("  %d     ", table[i].tid);
+            vga_puts(st);
+            int sl = k_strlen(st);
+            for (int s = 0; s < 13 - sl; s++) vga_putchar(' ');
+            vga_printf("%d", table[i].ticks);
+            int tl = 1;
+            uint32_t t = table[i].ticks;
+            while (t >= 10) { tl++; t /= 10; }
+            for (int s = 0; s < 8 - tl; s++) vga_putchar(' ');
+            vga_printf("%s\n", table[i].name);
+        }
+    }
+    vga_puts("\n");
+}
+
+static void cmd_demo(void) {
+    vga_puts_color("\n  [Stage 1 Demo] Spawning 2 concurrent processes...\n", VGA_YELLOW, VGA_BLACK);
+    vga_puts("  [P1] and [P2] will print concurrently. Run 'ps' to watch ticks.\n\n");
+    process_create("p-worker1", worker1_task);
+    process_create("p-worker2", worker2_task);
+}
+
+static void cmd_mutex_demo(void) {
+    vga_puts_color("\n  [Stage 2 – Mutex Demo] Two threads increment a shared counter\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  with mutex protection. Each thread increments 5 times (total=10).\n\n");
+
+    shared_counter = 0;
+    mutex_init(&counter_mutex, "counter");
+
+    thread_create("safe-t1", counter_thread_safe);
+    thread_create("safe-t2", counter_thread_safe);
+
+    /* Wait for threads to finish (~100 ticks) */
+    pit_sleep(120);
+
+    vga_printf("\n  Shared counter final value: %d (expected 10)\n\n", shared_counter);
+}
+
+static void cmd_prodcon(void) {
+    vga_puts_color("\n  [Stage 2 – Producer-Consumer] Semaphore-synchronized buffer\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  Buffer size: 4 | Producer: 6 items | Consumer: 6 items\n\n");
+
+    pc_head = 0;
+    pc_tail = 0;
+    sem_init(&sem_empty, BUFFER_SIZE, "empty");
+    sem_init(&sem_full,  0,           "full");
+    mutex_init(&pc_mutex, "pc-lock");
+
+    thread_create("producer", producer_thread);
+    thread_create("consumer", consumer_thread);
+
+    vga_puts("\n  Threads spawned. Run 'threads' to observe state.\n\n");
+}
+
+/* ---------------------------------------------------------------------------
+ * Shell loop
+ * --------------------------------------------------------------------------*/
+static char shell_buf[256];
+static char prompt[] = "\n  ksh> ";
 
 static void shell_run(void) {
-    vga_puts_color("\n  Kernel Shell ready. Type 'help' for commands, 'demo' for multi-tasking.\n",
+    vga_puts_color("\n  Kernel Shell ready. Type 'help' for commands.\n",
                    VGA_LIGHT_GREEN, VGA_BLACK);
 
     while (true) {
@@ -260,44 +394,28 @@ static void shell_run(void) {
         const char *cmd = k_ltrim(shell_buf);
         if (k_strlen(cmd) == 0) continue;
 
-        if (k_strcmp(cmd, "help")    == 0) { cmd_help();    continue; }
-        if (k_strcmp(cmd, "clear")   == 0) { cmd_clear();   continue; }
-        if (k_strcmp(cmd, "version") == 0) { cmd_version(); continue; }
-        if (k_strcmp(cmd, "halt")    == 0) { cmd_halt();    continue; }
-        if (k_strcmp(cmd, "ps")      == 0) { cmd_ps();      continue; }
-        if (k_strcmp(cmd, "demo")    == 0) { cmd_demo();    continue; }
-        if (k_strcmp(cmd, "about")   == 0) { cmd_about();   continue; }
-        if (k_strcmp(cmd, "mem")     == 0) { cmd_mem();     continue; }
+        if (k_strcmp(cmd, "help")       == 0) { cmd_help();       continue; }
+        if (k_strcmp(cmd, "clear")      == 0) { cmd_clear();      continue; }
+        if (k_strcmp(cmd, "version")    == 0) { cmd_version();    continue; }
+        if (k_strcmp(cmd, "halt")       == 0) { cmd_halt();       continue; }
+        if (k_strcmp(cmd, "ps")         == 0) { cmd_ps();         continue; }
+        if (k_strcmp(cmd, "demo")       == 0) { cmd_demo();       continue; }
+        if (k_strcmp(cmd, "threads")    == 0) { cmd_threads();    continue; }
+        if (k_strcmp(cmd, "mutex-demo") == 0) { cmd_mutex_demo(); continue; }
+        if (k_strcmp(cmd, "prodcon")    == 0) { cmd_prodcon();    continue; }
+        if (k_strcmp(cmd, "about")      == 0) { cmd_about();      continue; }
+        if (k_strcmp(cmd, "mem")        == 0) { cmd_mem();        continue; }
 
-        if (k_strncmp(cmd, "kill ", 5) == 0) {
-            cmd_kill(k_ltrim(cmd + 5));
-            continue;
-        }
-        if (k_strcmp(cmd, "kill") == 0) {
-            cmd_kill("");
-            continue;
-        }
+        if (k_strncmp(cmd, "kill ", 5) == 0) { cmd_kill(k_ltrim(cmd + 5)); continue; }
+        if (k_strcmp(cmd, "kill")      == 0) { cmd_kill("");               continue; }
 
-        if (k_strncmp(cmd, "echo ", 5) == 0) {
-            cmd_echo(k_ltrim(cmd + 5));
-            continue;
-        }
-        if (k_strcmp(cmd, "echo") == 0) {
-            cmd_echo("");
-            continue;
-        }
+        if (k_strncmp(cmd, "echo ", 5) == 0) { cmd_echo(k_ltrim(cmd + 5)); continue; }
+        if (k_strcmp(cmd, "echo")      == 0) { cmd_echo("");                continue; }
 
-        if (k_strncmp(cmd, "colour ", 7) == 0) {
-            cmd_colour(k_ltrim(cmd + 7));
-            continue;
-        }
-        if (k_strcmp(cmd, "colour") == 0) {
-            cmd_colour("");
-            continue;
-        }
+        if (k_strncmp(cmd, "colour ", 7) == 0) { cmd_colour(k_ltrim(cmd + 7)); continue; }
+        if (k_strcmp(cmd, "colour")      == 0) { cmd_colour("");               continue; }
 
-        if (k_strcmp(cmd, "threads") == 0 ||
-            k_strcmp(cmd, "meminfo") == 0 ||
+        if (k_strcmp(cmd, "meminfo") == 0 ||
             k_strcmp(cmd, "free")    == 0 ||
             k_strcmp(cmd, "ls")      == 0 ||
             k_strcmp(cmd, "touch")   == 0 ||
@@ -315,12 +433,16 @@ static void shell_run(void) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Kernel entry point – called from kernel_entry.asm
+ * --------------------------------------------------------------------------*/
 void kernel_main(void) {
     vga_init();
     kb_init();
     idt_init();
     pit_init(PIT_FREQUENCY_HZ);
     scheduler_init();
+    thread_init();
 
     __asm__ __volatile__("sti");
 

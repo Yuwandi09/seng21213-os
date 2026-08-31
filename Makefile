@@ -1,5 +1,5 @@
 # =============================================================================
-# SENG21213-OS :: Makefile (Stage 1)
+# SENG21213-OS :: Makefile (Stage 2)
 # =============================================================================
 
 AS       := nasm
@@ -8,12 +8,14 @@ ASFLAGS  := -f elf32
 ifneq (, $(shell which i686-elf-gcc 2>/dev/null))
     CC   := i686-elf-gcc
     LD   := i686-elf-ld
-    CFLAGS := -std=gnu99 -m32 -ffreestanding -fno-stack-protector -fno-pie -nostdlib               -Wall -Wextra -O2 -I./include
+    CFLAGS := -std=gnu99 -m32 -ffreestanding -fno-stack-protector -fno-pie -nostdlib \
+              -Wall -Wextra -O2 -I./include
     LDFLAGS := -m elf_i386 -nostdlib
 else
     CC   := gcc
     LD   := ld
-    CFLAGS := -std=gnu99 -m32 -ffreestanding -fno-stack-protector -fno-pie -nostdlib               -Wall -Wextra -O2 -I./include
+    CFLAGS := -std=gnu99 -m32 -ffreestanding -fno-stack-protector -fno-pie -nostdlib \
+              -Wall -Wextra -O2 -I./include
     LDFLAGS := -m elf_i386 -nostdlib
 endif
 
@@ -32,7 +34,10 @@ KERNEL_C_SRCS   := kernel/kernel.c    \
                    kernel/idt.c       \
                    kernel/pit.c       \
                    kernel/process.c   \
-                   kernel/scheduler.c
+                   kernel/scheduler.c \
+                   kernel/thread.c    \
+                   kernel/mutex.c     \
+                   kernel/semaphore.c
 
 KERNEL_C_OBJS   := $(patsubst kernel/%.c, build/%.o, $(KERNEL_C_SRCS))
 KERNEL_ELF      := build/kernel.elf
