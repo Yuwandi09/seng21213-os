@@ -1,0 +1,8 @@
+# Build artefacts
+build/
+seng21213-os.img
+seng21213.img
+*.o
+*.bin
+*.elf
+*.img
