@@ -1,5 +1,5 @@
 /* =============================================================================
- * SENG21213-OS :: Main Kernel (Stage 3 – Physical Memory Manager)
+ * SENG21213-OS :: Main Kernel (Stage 4 – In-Memory RAM-Disk File System)
  * File   : kernel/kernel.c
  * ============================================================================*/
 
@@ -13,6 +13,7 @@
 #include "mutex.h"
 #include "semaphore.h"
 #include "pmm.h"
+#include "fs.h"
 #include "../include/types.h"
 
 static void cmd_help(void);
@@ -30,6 +31,11 @@ static void cmd_threads(void);
 static void cmd_demo(void);
 static void cmd_mutex_demo(void);
 static void cmd_prodcon(void);
+static void cmd_ls(void);
+static void cmd_touch(const char *args);
+static void cmd_write(const char *args);
+static void cmd_cat(const char *args);
+static void cmd_rm(const char *args);
 
 /* ---------------------------------------------------------------------------
  * String utilities
@@ -68,7 +74,7 @@ static int k_atoi(const char **str) {
 }
 
 /* ---------------------------------------------------------------------------
- * Simple progress bar helper
+ * Progress bar helper
  * --------------------------------------------------------------------------*/
 static void draw_bar(uint32_t used, uint32_t total, int width, vga_color_t col) {
     int filled = (int)((used * (uint32_t)width) / (total ? total : 1));
@@ -94,16 +100,16 @@ static void print_splash(void) {
     vga_puts_color("  SENG21213-OS  |  Computer Architecture & Operating Systems",
                    VGA_YELLOW, VGA_BLACK);
     vga_set_cursor(2, 2);
-    vga_puts_color("  Stage 3: Physical Memory Manager – Bitmap Frame Allocator (v0.4-stage3)",
+    vga_puts_color("  Stage 4: RAM-Disk File System & Complete Kernel (v0.5-stage4)",
                    VGA_LIGHT_CYAN, VGA_BLACK);
     vga_set_cursor(3, 2);
     vga_puts_color("  Faculty of Engineering – Department of Software Engineering",
                    VGA_LIGHT_GREY, VGA_BLACK);
     vga_set_cursor(4, 2);
-    vga_puts_color("  Commands: help | meminfo | ps | threads | demo | mutex-demo | prodcon",
+    vga_puts_color("  Commands: help | ls | touch | write | cat | rm | meminfo | ps | threads",
                    VGA_LIGHT_GREEN, VGA_BLACK);
     vga_set_cursor(5, 2);
-    vga_puts_color("  PMM: Bitmap allocator | 4 KB frames | 32 MB total RAM",
+    vga_puts_color("  FS: In-Memory RAM Disk | 16 file slots | 1024 bytes/file",
                    VGA_DARK_GREY, VGA_BLACK);
 
     vga_set_cursor(8, 0);
@@ -114,9 +120,9 @@ static void print_splash(void) {
 
     uint32_t free_f = pmm_get_free_frames();
     uint32_t total_f = pmm_get_total_frames();
-    uint32_t free_kb = free_f * 4;
-    vga_printf("  [  OK  ] PMM initialized: %d KB free / %d KB total\n\n",
-               free_kb, (total_f * 4));
+    vga_printf("  [  OK  ] PMM initialized: %d KB free / %d KB total\n",
+               free_f * 4, total_f * 4);
+    vga_printf("  [  OK  ] In-memory RAM disk ready (%d files present)\n\n", fs_file_count());
 }
 
 /* ---------------------------------------------------------------------------
@@ -198,10 +204,115 @@ static void consumer_thread(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * File System Shell Commands
+ * --------------------------------------------------------------------------*/
+static void cmd_ls(void) {
+    fs_file_t *files = fs_get_files();
+    int count = 0;
+
+    vga_puts_color("\n  NAME                 SIZE (bytes)\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ───────────────────────────────────\n");
+
+    for (int i = 0; i < FS_MAX_FILES; i++) {
+        if (files[i].used) {
+            count++;
+            vga_printf("  %-20s %d B\n", files[i].name, files[i].size);
+        }
+    }
+
+    if (count == 0) {
+        vga_puts("  (no files found)\n");
+    }
+
+    vga_printf("\n  Total: %d file(s)  [Slots free: %d / %d]\n\n",
+               count, FS_MAX_FILES - count, FS_MAX_FILES);
+}
+
+static void cmd_touch(const char *args) {
+    const char *name = k_ltrim(args);
+    if (!*name) {
+        vga_puts_color("  Usage: touch <filename>\n", VGA_YELLOW, VGA_BLACK);
+        return;
+    }
+
+    int rc = fs_create(name);
+    if (rc == 0) {
+        vga_printf("  Created file: %s\n", name);
+    } else if (rc == -2) {
+        vga_printf("  File '%s' already exists.\n", name);
+    } else {
+        vga_puts_color("  Error: Disk full!\n", VGA_LIGHT_RED, VGA_BLACK);
+    }
+}
+
+static void cmd_write(const char *args) {
+    const char *p = k_ltrim(args);
+    if (!*p) {
+        vga_puts_color("  Usage: write <filename> <text>\n", VGA_YELLOW, VGA_BLACK);
+        return;
+    }
+
+    char name[FS_MAX_NAME_LEN];
+    size_t i = 0;
+    while (*p && *p != ' ' && i < sizeof(name) - 1) {
+        name[i++] = *p++;
+    }
+    name[i] = '\0';
+
+    p = k_ltrim(p);
+    if (!*p) {
+        vga_puts_color("  Usage: write <filename> <text>\n", VGA_YELLOW, VGA_BLACK);
+        return;
+    }
+
+    int bytes = fs_write(name, p, k_strlen(p));
+    if (bytes >= 0) {
+        vga_printf("  Wrote %d bytes to '%s'.\n", bytes, name);
+    } else {
+        vga_printf("  Error: File '%s' not found. Use 'touch %s' first.\n", name, name);
+    }
+}
+
+static void cmd_cat(const char *args) {
+    const char *name = k_ltrim(args);
+    if (!*name) {
+        vga_puts_color("  Usage: cat <filename>\n", VGA_YELLOW, VGA_BLACK);
+        return;
+    }
+
+    static char read_buf[FS_MAX_FILE_SIZE];
+    int bytes = fs_read(name, read_buf, sizeof(read_buf));
+    if (bytes >= 0) {
+        vga_puts_color("\n--- ", VGA_DARK_GREY, VGA_BLACK);
+        vga_puts_color(name, VGA_LIGHT_CYAN, VGA_BLACK);
+        vga_puts_color(" ---\n", VGA_DARK_GREY, VGA_BLACK);
+        vga_puts(read_buf);
+        vga_puts("\n");
+    } else {
+        vga_printf("  File '%s' not found.\n", name);
+    }
+}
+
+static void cmd_rm(const char *args) {
+    const char *name = k_ltrim(args);
+    if (!*name) {
+        vga_puts_color("  Usage: rm <filename>\n", VGA_YELLOW, VGA_BLACK);
+        return;
+    }
+
+    int rc = fs_delete(name);
+    if (rc == 0) {
+        vga_printf("  Deleted '%s'.\n", name);
+    } else {
+        vga_printf("  File '%s' not found.\n", name);
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * Shell command implementations
  * --------------------------------------------------------------------------*/
 static void cmd_help(void) {
-    vga_puts_color("\n  SENG21213-OS Shell Commands (Stage 3)\n", VGA_YELLOW, VGA_BLACK);
+    vga_puts_color("\n  SENG21213-OS Shell Commands (Stage 4 – Complete)\n", VGA_YELLOW, VGA_BLACK);
     vga_puts("  ──────────────────────────────────────────────────────────────\n");
     vga_puts("  help             – Show this help message\n");
     vga_puts("  clear            – Clear the screen\n");
@@ -221,25 +332,31 @@ static void cmd_help(void) {
     vga_puts("  prodcon          – Producer-Consumer semaphore demo\n");
     vga_puts_color("\n  Stage 3 – Physical Memory Manager:\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  meminfo          – Show PMM stats + allocate/free demo\n");
-    vga_puts_color("\n  Upcoming:\n", VGA_DARK_GREY, VGA_BLACK);
-    vga_puts("  ls / touch / cat – [Stage 4] RAM-disk file system\n\n");
+    vga_puts_color("\n  Stage 4 – RAM-Disk File System:\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ls               – List all files in RAM disk\n");
+    vga_puts("  touch <file>     – Create a new empty file\n");
+    vga_puts("  write <file> <s> – Write string data to file\n");
+    vga_puts("  cat <file>       – Display file contents\n");
+    vga_puts("  rm <file>        – Remove file from RAM disk\n\n");
 }
 
 static void cmd_clear(void)  { vga_clear(VGA_BLACK); }
 
 static void cmd_about(void) {
-    vga_puts_color("\n  About SENG21213-OS (Stage 3)\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts_color("\n  About SENG21213-OS (Complete Kernel)\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  ─────────────────────────────────────────────\n");
     vga_puts("  Architecture : x86 (i686), 32-bit Protected Mode\n");
     vga_puts("  Scheduler    : Round-Robin, 100 Hz PIT (IRQ0)\n");
     vga_puts("  Threads      : 16-slot kernel thread table\n");
     vga_puts("  Sync         : mutex_t (XCHG spinlock), semaphore_t\n");
-    vga_puts("  PMM          : Bitmap allocator, 4 KB frames, 32 MB RAM\n\n");
+    vga_puts("  PMM          : Bitmap allocator, 4 KB frames, 32 MB RAM\n");
+    vga_puts("  File System  : Flat in-memory RAM disk (16 files, 1 KB each)\n\n");
 }
 
 static void cmd_version(void) {
-    vga_puts_color("\n  SENG21213-OS v0.4-stage3\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  Stage 3: Physical Memory Manager (PMM bitmap allocator)\n\n");
+    vga_puts_color("\n  SENG21213-OS v0.5-stage4\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  Stage 4: In-Memory RAM-Disk File System\n");
+    vga_puts("  Full 5-stage kernel implementation complete!\n\n");
 }
 
 static void cmd_echo(const char *args) {
@@ -298,15 +415,12 @@ static void cmd_meminfo(void) {
     draw_bar(used_f, total_f, 40, VGA_LIGHT_RED);
     vga_printf(" %d%%\n", (used_f * 100) / (total_f ? total_f : 1));
 
-    /* Live demo: allocate 4 frames then free them */
     vga_puts_color("\n  [Demo] Allocating 4 test frames...\n", VGA_YELLOW, VGA_BLACK);
     phys_addr_t frames[4];
     for (int i = 0; i < 4; i++) {
         frames[i] = pmm_alloc_frame();
         if (frames[i]) {
             vga_printf("    Allocated frame at physical 0x%x\n", frames[i]);
-        } else {
-            vga_puts_color("    Out of memory!\n", VGA_LIGHT_RED, VGA_BLACK);
         }
     }
 
@@ -447,26 +561,30 @@ static void shell_run(void) {
         if (k_strcmp(cmd, "mutex-demo") == 0) { cmd_mutex_demo(); continue; }
         if (k_strcmp(cmd, "prodcon")    == 0) { cmd_prodcon();    continue; }
         if (k_strcmp(cmd, "meminfo")    == 0) { cmd_meminfo();    continue; }
+        if (k_strcmp(cmd, "ls")         == 0) { cmd_ls();         continue; }
         if (k_strcmp(cmd, "about")      == 0) { cmd_about();      continue; }
         if (k_strcmp(cmd, "mem")        == 0) { cmd_mem();        continue; }
 
-        if (k_strncmp(cmd, "kill ", 5) == 0) { cmd_kill(k_ltrim(cmd + 5)); continue; }
-        if (k_strcmp(cmd, "kill")      == 0) { cmd_kill("");               continue; }
-        if (k_strncmp(cmd, "echo ", 5) == 0) { cmd_echo(k_ltrim(cmd + 5)); continue; }
-        if (k_strcmp(cmd, "echo")      == 0) { cmd_echo("");                continue; }
-        if (k_strncmp(cmd, "colour ", 7) == 0) { cmd_colour(k_ltrim(cmd + 7)); continue; }
-        if (k_strcmp(cmd, "colour")      == 0) { cmd_colour("");               continue; }
+        if (k_strncmp(cmd, "touch ", 6) == 0) { cmd_touch(k_ltrim(cmd + 6)); continue; }
+        if (k_strcmp(cmd, "touch")      == 0) { cmd_touch("");                continue; }
 
-        if (k_strcmp(cmd, "free")  == 0 ||
-            k_strcmp(cmd, "ls")    == 0 ||
-            k_strcmp(cmd, "touch") == 0 ||
-            k_strcmp(cmd, "write") == 0 ||
-            k_strcmp(cmd, "rm")    == 0 ||
-            k_strcmp(cmd, "cat")   == 0) {
-            vga_puts_color("  [TODO] This command belongs to Stage 4 (file system).\n",
-                           VGA_YELLOW, VGA_BLACK);
-            continue;
-        }
+        if (k_strncmp(cmd, "write ", 6) == 0) { cmd_write(k_ltrim(cmd + 6)); continue; }
+        if (k_strcmp(cmd, "write")      == 0) { cmd_write("");                continue; }
+
+        if (k_strncmp(cmd, "cat ", 4)   == 0) { cmd_cat(k_ltrim(cmd + 4));   continue; }
+        if (k_strcmp(cmd, "cat")        == 0) { cmd_cat("");                 continue; }
+
+        if (k_strncmp(cmd, "rm ", 3)    == 0) { cmd_rm(k_ltrim(cmd + 3));    continue; }
+        if (k_strcmp(cmd, "rm")         == 0) { cmd_rm("");                 continue; }
+
+        if (k_strncmp(cmd, "kill ", 5)  == 0) { cmd_kill(k_ltrim(cmd + 5));  continue; }
+        if (k_strcmp(cmd, "kill")       == 0) { cmd_kill("");                continue; }
+
+        if (k_strncmp(cmd, "echo ", 5)  == 0) { cmd_echo(k_ltrim(cmd + 5));  continue; }
+        if (k_strcmp(cmd, "echo")       == 0) { cmd_echo("");                 continue; }
+
+        if (k_strncmp(cmd, "colour ", 7)== 0) { cmd_colour(k_ltrim(cmd + 7));continue; }
+        if (k_strcmp(cmd, "colour")     == 0) { cmd_colour("");                continue; }
 
         vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);
         vga_puts(cmd);
@@ -485,6 +603,7 @@ void kernel_main(void) {
     scheduler_init();
     thread_init();
     pmm_init();
+    fs_init();
 
     __asm__ __volatile__("sti");
 
