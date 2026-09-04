@@ -1,193 +1,146 @@
-# SENG21213-OS — Stage 0: Kernel Foundations
+# SENG21213-OS — Complete 32-bit x86 Operating System
 
 > **Course**: SENG 21213 – Computer Architecture & Operating Systems  
-> **Year**: 2nd Year, Software Engineering  
-> **Assignment**: Build your own x86 Operating System
+> **Student**: Yuwandi Sandanayake  
+> **Department**: Department of Software Engineering, Faculty of Engineering  
+> **Repository**: [https://github.com/Yuwandi09/seng21213-os](https://github.com/Yuwandi09/seng21213-os)
 
 ---
 
-## What Is This?
+## Overview
 
-This is **Stage 0** of your semester-long OS assignment. Over 5 lecture milestones
-(Lectures 8–12), your team will transform this minimal kernel into a functioning
-operating system with process management, threading, memory management, and a
-file system.
+**SENG21213-OS** is a complete, monolithic 32-bit x86 Protected Mode operating system developed across all 5 course milestones. The operating system features a custom MBR bootloader, VGA text-mode driver, PS/2 keyboard driver, Interrupt Descriptor Table (IDT) with PIC remapping, i8253 PIT 100 Hz timer, preemptive Round-Robin process scheduler, kernel-level threads, synchronization primitives (Spinlock Mutex & Counting Semaphore), a bitmap-based Physical Memory Manager (PMM), and an in-memory RAM-disk file system with full interactive shell commands.
+
+---
+
+## Milestone Releases
+
+All 5 required release tags are committed and pushed:
+
+| Milestone Tag | Stage | Key Features Implemented |
+|:---|:---|:---|
+| [`v0.1-stage0`](https://github.com/Yuwandi09/seng21213-os/releases/tag/v0.1-stage0) | **Stage 0** | MBR Bootloader (16-bit to 32-bit PM transition), GDT, VGA text driver, PS/2 keyboard driver, interactive shell with `help`, `version`, `colour`, `clear`, `halt`, `about`, `mem`. |
+| [`v0.2-stage1`](https://github.com/Yuwandi09/seng21213-os/releases/tag/v0.2-stage1) | **Stage 1** | 256-entry IDT, 8259 PIC remapping (IRQs 32–47), i8253 PIT timer at 100 Hz (IRQ0), assembly context switch (`switch.asm`), Process Control Block (16 slots, 4 KB stacks), Round-Robin preemptive scheduler (20 ms quantum), `ps`, `kill`, and concurrent process `demo`. |
+| [`v0.3-stage2`](https://github.com/Yuwandi09/seng21213-os/releases/tag/v0.3-stage2) | **Stage 2** | Kernel-level threads (`thread_create`, `thread_exit`, `thread_kill`), spinlock `mutex_t` using atomic `XCHG` instruction, counting `semaphore_t` (Dijkstra P/V), shell commands `threads`, `mutex-demo`, and `prodcon` (producer-consumer). |
+| [`v0.4-stage3`](https://github.com/Yuwandi09/seng21213-os/releases/tag/v0.4-stage3) | **Stage 3** | Physical Memory Manager (PMM) with bitmap frame allocator (8,192 frames @ 4 KB = 32 MB RAM), memory reservation for low 1 MB & kernel sections, `meminfo` command with live frame alloc/free test. |
+| [`v0.5-stage4`](https://github.com/Yuwandi09/seng21213-os/releases/tag/v0.5-stage4) | **Stage 4** | In-memory RAM-disk file system (16 file slots, 1 KB max per file), pre-populated `readme.txt` and `info.txt`, shell commands `ls`, `touch`, `write`, `cat`, and `rm`. |
+
+---
+
+## Project Structure
 
 ```
 seng21213-os/
 ├── boot/
-│   └── boot.asm          ← MBR Bootloader (NASM, 16-bit → 32-bit transition)
+│   └── boot.asm          ← MBR Bootloader (16-bit real mode → GDT → 32-bit protected mode)
 ├── kernel/
-│   ├── kernel_entry.asm  ← Protected-mode entry, calls kernel_main()
-│   ├── kernel.c          ← Main kernel: shell loop, command dispatch
-│   ├── vga.c / vga.h     ← VGA 80×25 text-mode driver
-│   ├── keyboard.c / .h   ← PS/2 keyboard polling driver
+│   ├── kernel_entry.asm  ← Protected-mode entry point, calls kernel_main()
+│   ├── idt_asm.asm       ← Low-level ISR/IRQ assembly stubs and IDT flush
+│   ├── switch.asm        ← Assembly context switch stub (switch_to)
+│   ├── kernel.c          ← Kernel entry, shell loop, command dispatcher
+│   ├── vga.c / vga.h     ← VGA text-mode driver (80x25, colors, cursor, printf)
+│   ├── keyboard.c / .h   ← PS/2 keyboard driver (scancode mapping, buffer)
+│   ├── idt.c / idt.h     ← 256-entry IDT, 8259 PIC remapping, IRQ dispatch
+│   ├── pit.c / pit.h     ← i8253 PIT at 100 Hz (10 ms ticks, pit_sleep)
+│   ├── process.c / .h    ← Process table (16 PCBs), create, yield, exit, kill
+│   ├── scheduler.c / .h  ← Round-Robin preemptive scheduler (20 ms quantum)
+│   ├── thread.c / .h     ← Kernel threads (16 threads, 4 KB stacks each)
+│   ├── mutex.c / .h      ← Mutex lock using atomic XCHG instruction
+│   ├── semaphore.c / .h  ← Counting semaphore with sem_wait and sem_signal
+│   ├── pmm.c / pmm.h     ← Physical Memory Manager (bitmap frame allocator)
+│   └── fs.c / fs.h       ← In-memory RAM-disk file system
 ├── include/
-│   └── types.h           ← Primitive types (no libc!)
-├── linker.ld             ← Linker script (kernel at 0x10000)
-├── Makefile              ← Build system
-├── Dockerfile            ← Reproducible build environment
-└── README.md             ← You are here
+│   └── types.h           ← C23-compatible primitive types (uint8_t, bool, size_t, etc.)
+├── linker.ld             ← Linker script loading kernel at 0x10000
+├── Makefile              ← Build system with gcc, nasm, ld, qemu
+├── .gitignore            ← Excludes build artifacts and disk images
+└── README.md             ← Project documentation
 ```
 
 ---
 
-## Milestone Schedule
+## Building and Running
 
-| Lecture | Milestone | Files to Add |
-|---------|-----------|-------------|
-| L08 | ✅ Stage 0 – Boot + VGA + Shell | *Given to you* |
-| L09 | Process Management | `kernel/process.c`, `kernel/scheduler.c` |
-| L10 | Threads & Synchronisation | `kernel/thread.c`, `kernel/mutex.c` |
-| L11 | Memory Management | `kernel/pmm.c`, `kernel/vmm.c` |
-| L12 | File System | `kernel/fs.c`, `kernel/ramdisk.c` |
-
----
-
-## Quick Start
-
-### Option A: Docker (Recommended for all platforms)
+### Prerequisites (Ubuntu / Debian / WSL2)
 
 ```bash
-# 1. Install Docker Desktop (Windows/Mac) or Docker Engine (Linux)
-# 2. Build the image once:
-docker build -t seng21213-os-builder .
+sudo apt update
+sudo apt install nasm gcc gcc-multilib binutils qemu-system-x86 make
+```
 
-# 3. Build the OS:
-docker run --rm -v "$(pwd)":/os seng21213-os-builder
+### Build the OS
 
-# 4. Run in QEMU (install QEMU locally):
+```bash
+make clean && make
+```
+
+This compiles all assembly (`.asm`) and C (`.c`) sources into `build/kernel.bin` and packages it with `boot/boot.bin` into a 1.44 MB bootable floppy image `seng21213-os.img`.
+
+### Run in QEMU
+
+```bash
+make run
+```
+
+Or manually:
+
+```bash
 qemu-system-i386 -drive format=raw,file=seng21213-os.img -m 32M
 ```
 
-### Option B: Native Linux/WSL2
+---
 
-```bash
-# Ubuntu/Debian
-sudo apt install nasm gcc gcc-multilib binutils qemu-system-x86 make
+## Available Shell Commands
 
-# Build
-make all
-
-# Run
-make run
-```
-
-### Option C: macOS (Homebrew)
-
-```bash
-brew install nasm x86_64-elf-binutils qemu
-
-# You also need an i686-elf-gcc cross-compiler:
-# See: https://wiki.osdev.org/GCC_Cross-Compiler
-make all
-make run
-```
+| Command | Usage | Description |
+|:---|:---|:---|
+| `help` | `help` | Display list of all shell commands |
+| `clear` | `clear` | Clear the VGA screen |
+| `version` | `version` | Display kernel version information |
+| `colour` | `colour <fg> <bg>` | Change text foreground (0–15) and background (0–15) |
+| `echo` | `echo <text>` | Echo text to standard output |
+| `about` | `about` | Display system architecture and components |
+| `mem` | `mem` | Display physical memory address layout map |
+| `ps` | `ps` | List all processes in the PCB table (PID, state, ticks, name) |
+| `kill` | `kill <pid>` | Terminate a running process |
+| `demo` | `demo` | Spawn 2 concurrent processes to demonstrate multitasking |
+| `threads` | `threads` | List all active kernel threads (TID, state, ticks, name) |
+| `mutex-demo`| `mutex-demo` | Run 2 threads safely incrementing a shared counter with mutex |
+| `prodcon` | `prodcon` | Run Producer-Consumer demonstration using counting semaphores |
+| `meminfo` | `meminfo` | Display PMM frame statistics, memory bar, and alloc/free test |
+| `ls` | `ls` | List all files in the in-memory RAM disk with file sizes |
+| `touch` | `touch <file>` | Create a new empty file in the file system |
+| `write` | `write <file> <text>`| Write text contents into a file |
+| `cat` | `cat <file>` | Display contents of a file |
+| `rm` | `rm <file>` | Delete a file from the file system |
+| `halt` | `halt` | Halt the CPU |
 
 ---
 
-## Understanding the Boot Process
+## Architectural Details
 
-```
-Power On
-  │
-  ▼
-BIOS (firmware in ROM)
-  │  Loads 512-byte MBR from disk sector 1 into RAM at 0x7C00
-  ▼
-boot/boot.asm  (Real Mode, 16-bit)
-  │  Prints "Loading SENG21213-OS..."
-  │  Reads 64 sectors (kernel) from disk into RAM at 0x10000
-  │  Sets up GDT (Global Descriptor Table)
-  │  Switches CPU to 32-bit Protected Mode
-  │  Far-jumps to 0x10000
-  ▼
-kernel/kernel_entry.asm  (Protected Mode, 32-bit)
-  │  Calls kernel_main()
-  ▼
-kernel/kernel.c  →  kernel_main()
-  │  vga_init()     – set up text display
-  │  kb_init()      – set up keyboard
-  │  print_splash() – welcome screen
-  │  shell_run()    – interactive shell (infinite loop)
-  ▼
-Your code from here...
-```
+### 1. Bootloader & Kernel Entry
+- `boot/boot.asm`: 512-byte MBR loaded at `0x7C00` by BIOS. Switches from 16-bit Real Mode to 32-bit Protected Mode after configuring the Global Descriptor Table (GDT), enables the A20 line, loads 64 disk sectors into `0x10000`, and jumps to `kernel/kernel_entry.asm`.
+- `kernel/kernel_entry.asm`: Sets up data segment registers (`DS`, `ES`, `FS`, `GS`, `SS` = `0x10`), sets `ESP` to `0x90000`, and invokes `kernel_main()`.
+
+### 2. Interrupts & Timer
+- **IDT**: 256 interrupt gates configured in `kernel/idt.c`. PIC master (ports `0x20`/`0x21`) and slave (ports `0xA0`/`0xA1`) remapped to interrupt vectors 32–47.
+- **PIT**: i8253 timer configured via channel 0 (ports `0x43`/`0x40`) with divisor `11932` (100 Hz / 10 ms period), generating IRQ0 (vector 32).
+
+### 3. Process & Thread Management
+- **PCB Table**: 16 slots with 4 KB dedicated stacks. Fake stack frames pre-populated with initial register values (`EFLAGS` with IF=1, entry address, exit function).
+- **Context Switch**: Handled in assembly (`switch_to` in `switch.asm`), atomically pushing/popping caller-saved registers and swapping `ESP`.
+- **Synchronization**: `mutex_t` implemented via atomic `xchgl` instruction; `semaphore_t` implemented with interrupt-safe atomic counters and cooperative CPU yielding.
+
+### 4. Memory Management
+- **PMM**: 8,192 frames of 4 KB each (32 MB total RAM). Bitmap tracking (256 `uint32_t` words). Low 1 MB (VGA, IVT, BIOS), kernel binary, and stack space are marked permanently reserved. Extended memory (1 MB–32 MB) is allocated and freed on demand.
+
+### 5. In-Memory File System
+- Flat RAM disk supporting up to 16 files, each up to 1,024 bytes. Full support for creation, reading, writing, deletion, and directory listing.
 
 ---
 
-## Building Lecture 9: Process Management
+## Author
 
-When you reach Lecture 9, you'll add process support. Here's the interface to implement:
-
-```c
-/* kernel/process.h  — you write this! */
-
-#define MAX_PROCESSES    16
-#define STACK_SIZE     4096
-
-typedef enum { READY, RUNNING, BLOCKED, TERMINATED } proc_state_t;
-
-typedef struct pcb {
-    uint32_t      pid;
-    proc_state_t  state;
-    uint32_t      esp;          /* Saved stack pointer */
-    uint32_t      eip;          /* Saved instruction pointer */
-    uint32_t      stack[STACK_SIZE / 4];
-    struct pcb   *next;         /* For linked-list ready queue */
-} pcb_t;
-
-void   process_init(void);
-pcb_t *process_create(void (*entry)(void));
-void   process_yield(void);        /* Trigger context switch */
-void   process_exit(void);
-void   scheduler_tick(void);       /* Called by timer IRQ (Lecture 10) */
-```
-
----
-
-## Debugging Tips
-
-```bash
-# Debug with GDB
-make run-debug
-# In another terminal:
-gdb
-(gdb) target remote :1234
-(gdb) set architecture i386
-(gdb) symbol-file build/kernel.elf
-(gdb) break kernel_main
-(gdb) continue
-
-# Inspect the disk image
-xxd seng21213-os.img | head -32    # View MBR
-xxd seng21213-os.img | grep -c aa55  # Verify boot signature
-```
-
----
-
-## Key Learning Resources
-
-| Topic | Reference |
-|-------|-----------|
-| x86 Protected Mode | Intel IA-32 Manual, Vol 3, Chapter 3 |
-| VGA Text Mode | OSDev Wiki: Text UI |
-| Interrupts / IDT | Stallings Ch.1; OSDev: IDT |
-| Process Management | Stallings Ch.3–4 (your lecture notes) |
-| Memory Management | Stallings Ch.7–8 (your lecture notes) |
-| OSDev community | https://wiki.osdev.org |
-
----
-
-## Assessment Rubric (per milestone)
-
-| Criterion | Weight |
-|-----------|--------|
-| Code compiles and kernel boots in QEMU | 30% |
-| Feature implementation (correct behaviour) | 40% |
-| Code quality and comments | 20% |
-| Lab demo and viva questions | 10% |
-
----
-
-*Happy hacking! Remember: every commercial OS started exactly like this.*
+- **Yuwandi Sandanayake**
+- **Repository**: [github.com/Yuwandi09/seng21213-os](https://github.com/Yuwandi09/seng21213-os)
