@@ -1,7 +1,8 @@
 # SENG21213-OS — Complete 32-bit x86 Operating System
 
 > **Course**: SENG 21213 – Computer Architecture & Operating Systems  
-> **Student Name**: Yuwandi Sandanayake  \n> **Student Number**: SE/2023/047  
+> **Student Name**: Yuwandi Sandanayake  
+> **Student Number**: SE/2023/047  
 > **Department**: Department of Software Engineering, Faculty of Engineering  
 > **Repository**: [https://github.com/Yuwandi09/seng21213-os](https://github.com/Yuwandi09/seng21213-os)
 
@@ -142,5 +143,6 @@ qemu-system-i386 -drive format=raw,file=seng21213-os.img -m 32M
 
 ## Author
 
-- **Name**: Yuwandi Sandanayake\n- **Student Number**: SE/2023/047
+- **Name**: Yuwandi Sandanayake
+- **Student Number**: SE/2023/047
 - **Repository**: [github.com/Yuwandi09/seng21213-os](https://github.com/Yuwandi09/seng21213-os)
