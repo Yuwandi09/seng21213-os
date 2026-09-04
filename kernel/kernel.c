@@ -1,5 +1,5 @@
 /* =============================================================================
- * SENG21213-OS :: Main Kernel (Stage 2 – Threads & Synchronization)
+ * SENG21213-OS :: Main Kernel (Stage 3 – Physical Memory Manager)
  * File   : kernel/kernel.c
  * ============================================================================*/
 
@@ -12,6 +12,7 @@
 #include "thread.h"
 #include "mutex.h"
 #include "semaphore.h"
+#include "pmm.h"
 #include "../include/types.h"
 
 static void cmd_help(void);
@@ -22,6 +23,7 @@ static void cmd_echo(const char *args);
 static void cmd_colour(const char *args);
 static void cmd_halt(void);
 static void cmd_mem(void);
+static void cmd_meminfo(void);
 static void cmd_ps(void);
 static void cmd_kill(const char *args);
 static void cmd_threads(void);
@@ -66,6 +68,22 @@ static int k_atoi(const char **str) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Simple progress bar helper
+ * --------------------------------------------------------------------------*/
+static void draw_bar(uint32_t used, uint32_t total, int width, vga_color_t col) {
+    int filled = (int)((used * (uint32_t)width) / (total ? total : 1));
+    vga_putchar('[');
+    for (int i = 0; i < width; i++) {
+        if (i < filled) {
+            vga_puts_color("|", col, VGA_BLACK);
+        } else {
+            vga_putchar('-');
+        }
+    }
+    vga_putchar(']');
+}
+
+/* ---------------------------------------------------------------------------
  * Splash screen
  * --------------------------------------------------------------------------*/
 static void print_splash(void) {
@@ -76,28 +94,33 @@ static void print_splash(void) {
     vga_puts_color("  SENG21213-OS  |  Computer Architecture & Operating Systems",
                    VGA_YELLOW, VGA_BLACK);
     vga_set_cursor(2, 2);
-    vga_puts_color("  Stage 2: Kernel Threads & Synchronization (v0.3-stage2)",
+    vga_puts_color("  Stage 3: Physical Memory Manager – Bitmap Frame Allocator (v0.4-stage3)",
                    VGA_LIGHT_CYAN, VGA_BLACK);
     vga_set_cursor(3, 2);
     vga_puts_color("  Faculty of Engineering – Department of Software Engineering",
                    VGA_LIGHT_GREY, VGA_BLACK);
     vga_set_cursor(4, 2);
-    vga_puts_color("  Commands: help | ps | threads | demo | mutex-demo | prodcon",
+    vga_puts_color("  Commands: help | meminfo | ps | threads | demo | mutex-demo | prodcon",
                    VGA_LIGHT_GREEN, VGA_BLACK);
     vga_set_cursor(5, 2);
-    vga_puts_color("  Sync: mutex_t (spinlock) | semaphore_t (counting)",
+    vga_puts_color("  PMM: Bitmap allocator | 4 KB frames | 32 MB total RAM",
                    VGA_DARK_GREY, VGA_BLACK);
 
     vga_set_cursor(8, 0);
     vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     vga_puts("  [  OK  ] IDT, 8259 PIC, i8253 PIT @ 100 Hz (IRQ0)\n");
     vga_puts("  [  OK  ] Round-Robin process scheduler active\n");
-    vga_puts("  [  OK  ] Kernel thread system initialized\n");
-    vga_puts("  [  OK  ] Mutex (xchg spinlock) + Counting Semaphore ready\n\n");
+    vga_puts("  [  OK  ] Kernel threads + mutex + semaphore ready\n");
+
+    uint32_t free_f = pmm_get_free_frames();
+    uint32_t total_f = pmm_get_total_frames();
+    uint32_t free_kb = free_f * 4;
+    vga_printf("  [  OK  ] PMM initialized: %d KB free / %d KB total\n\n",
+               free_kb, (total_f * 4));
 }
 
 /* ---------------------------------------------------------------------------
- * Stage 1 demo workers (process-based)
+ * Stage 1 process workers
  * --------------------------------------------------------------------------*/
 static void worker1_task(void) {
     for (int i = 0; i < 8; i++) {
@@ -118,10 +141,8 @@ static void worker2_task(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Stage 2: Thread demos
+ * Stage 2 sync demos
  * --------------------------------------------------------------------------*/
-
-/* --- Mutex demo: shared counter without/with protection --- */
 static volatile int shared_counter = 0;
 static mutex_t      counter_mutex;
 
@@ -129,37 +150,32 @@ static void counter_thread_safe(void) {
     for (int i = 0; i < 5; i++) {
         mutex_lock(&counter_mutex);
         int tmp = shared_counter;
-        pit_sleep(1); /* Simulate work inside critical section */
+        pit_sleep(1);
         shared_counter = tmp + 1;
         mutex_unlock(&counter_mutex);
         thread_yield();
     }
-    vga_puts_color(" [T:safe-done] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    vga_puts_color(" [T:done] ", VGA_LIGHT_GREEN, VGA_BLACK);
     thread_exit();
 }
 
-/* --- Producer-Consumer using semaphore --- */
 #define BUFFER_SIZE 4
-
 static volatile int  pc_buffer[BUFFER_SIZE];
-static volatile int  pc_head   = 0;
-static volatile int  pc_tail   = 0;
-static semaphore_t   sem_empty;  /* Slots available for producer */
-static semaphore_t   sem_full;   /* Items available for consumer */
+static volatile int  pc_head = 0;
+static volatile int  pc_tail = 0;
+static semaphore_t   sem_empty;
+static semaphore_t   sem_full;
 static mutex_t       pc_mutex;
 
 static void producer_thread(void) {
     for (int i = 1; i <= 6; i++) {
         sem_wait(&sem_empty);
         mutex_lock(&pc_mutex);
-
         pc_buffer[pc_head] = i;
         pc_head = (pc_head + 1) % BUFFER_SIZE;
         vga_printf(" [PROD:%d] ", i);
-
         mutex_unlock(&pc_mutex);
         sem_signal(&sem_full);
-
         pit_sleep(15);
     }
     vga_puts_color(" [Producer Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
@@ -170,14 +186,11 @@ static void consumer_thread(void) {
     for (int i = 0; i < 6; i++) {
         sem_wait(&sem_full);
         mutex_lock(&pc_mutex);
-
         int item = pc_buffer[pc_tail];
         pc_tail = (pc_tail + 1) % BUFFER_SIZE;
         vga_printf(" [CONS:%d] ", item);
-
         mutex_unlock(&pc_mutex);
         sem_signal(&sem_empty);
-
         pit_sleep(20);
     }
     vga_puts_color(" [Consumer Done] ", VGA_LIGHT_GREEN, VGA_BLACK);
@@ -188,7 +201,7 @@ static void consumer_thread(void) {
  * Shell command implementations
  * --------------------------------------------------------------------------*/
 static void cmd_help(void) {
-    vga_puts_color("\n  SENG21213-OS Shell Commands (Stage 2)\n", VGA_YELLOW, VGA_BLACK);
+    vga_puts_color("\n  SENG21213-OS Shell Commands (Stage 3)\n", VGA_YELLOW, VGA_BLACK);
     vga_puts("  ──────────────────────────────────────────────────────────────\n");
     vga_puts("  help             – Show this help message\n");
     vga_puts("  clear            – Clear the screen\n");
@@ -197,42 +210,40 @@ static void cmd_help(void) {
     vga_puts("  colour <fg> <bg> – Set text colours (0-15)\n");
     vga_puts("  halt             – Halt CPU\n");
     vga_puts("  about            – About this OS\n");
-    vga_puts("  mem              – Memory map info\n");
+    vga_puts("  mem              – Physical memory map\n");
     vga_puts_color("\n  Stage 1 – Processes:\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  ps               – List all processes\n");
     vga_puts("  kill <pid>       – Terminate a process\n");
     vga_puts("  demo             – Run concurrent process demo\n");
     vga_puts_color("\n  Stage 2 – Threads & Sync:\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  threads          – List all kernel threads\n");
-    vga_puts("  mutex-demo       – Demonstrate mutex protecting a shared counter\n");
+    vga_puts("  mutex-demo       – Shared counter with mutex protection\n");
     vga_puts("  prodcon          – Producer-Consumer semaphore demo\n");
+    vga_puts_color("\n  Stage 3 – Physical Memory Manager:\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  meminfo          – Show PMM stats + allocate/free demo\n");
     vga_puts_color("\n  Upcoming:\n", VGA_DARK_GREY, VGA_BLACK);
-    vga_puts("  meminfo          – [Stage 3] Physical memory manager\n");
     vga_puts("  ls / touch / cat – [Stage 4] RAM-disk file system\n\n");
 }
 
 static void cmd_clear(void)  { vga_clear(VGA_BLACK); }
 
 static void cmd_about(void) {
-    vga_puts_color("\n  About SENG21213-OS (Stage 2)\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts_color("\n  About SENG21213-OS (Stage 3)\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("  ─────────────────────────────────────────────\n");
     vga_puts("  Architecture : x86 (i686), 32-bit Protected Mode\n");
-    vga_puts("  Processes    : Round-Robin PCB table (16 slots, 4 KB stacks)\n");
-    vga_puts("  Threads      : Kernel threads (16 slots, 4 KB stacks each)\n");
-    vga_puts("  Synchronization: mutex_t (XCHG spinlock), semaphore_t (counting)\n");
-    vga_puts("  Timer        : i8253 PIT @ 100 Hz (IRQ0)\n\n");
+    vga_puts("  Scheduler    : Round-Robin, 100 Hz PIT (IRQ0)\n");
+    vga_puts("  Threads      : 16-slot kernel thread table\n");
+    vga_puts("  Sync         : mutex_t (XCHG spinlock), semaphore_t\n");
+    vga_puts("  PMM          : Bitmap allocator, 4 KB frames, 32 MB RAM\n\n");
 }
 
 static void cmd_version(void) {
-    vga_puts_color("\n  SENG21213-OS v0.3-stage2\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  Stage 2: Kernel Threads & Synchronization\n");
-    vga_puts("  Mutex (XCHG spinlock) + Counting Semaphore\n\n");
+    vga_puts_color("\n  SENG21213-OS v0.4-stage3\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  Stage 3: Physical Memory Manager (PMM bitmap allocator)\n\n");
 }
 
 static void cmd_echo(const char *args) {
-    vga_puts("  ");
-    vga_puts(args);
-    vga_puts("\n");
+    vga_puts("  "); vga_puts(args); vga_puts("\n");
 }
 
 static void cmd_colour(const char *args) {
@@ -259,12 +270,56 @@ static void cmd_halt(void) {
 }
 
 static void cmd_mem(void) {
-    vga_puts_color("\n  Memory Map\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  0x00000000 – 0x000FFFFF  :  First 1 MB (BIOS/VGA)\n");
-    vga_puts("  0x00010000               :  Kernel entry (0x10000)\n");
-    vga_puts("  0x00090000               :  Kernel stack base\n");
-    vga_puts("  0x000B8000               :  VGA text buffer\n");
-    vga_puts("  0x00100000 – 0x01FFFFFF  :  Extended memory (~30 MB usable)\n\n");
+    vga_puts_color("\n  Physical Memory Map (x86 i686, 32 MB)\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ──────────────────────────────────────────────────────\n");
+    vga_puts("  0x00000000 – 0x000004FF  :  Real Mode IVT + BDA\n");
+    vga_puts("  0x00000500 – 0x00007BFF  :  Conventional RAM (free)\n");
+    vga_puts("  0x00007C00 – 0x00007DFF  :  MBR Bootloader\n");
+    vga_puts("  0x00010000 – 0x0001FFFF  :  Kernel image\n");
+    vga_puts("  0x00080000 – 0x0009FFFF  :  Kernel stack region\n");
+    vga_puts("  0x000A0000 – 0x000BFFFF  :  Video RAM (VGA 0xB8000)\n");
+    vga_puts("  0x000C0000 – 0x000FFFFF  :  BIOS ROM / reserved\n");
+    vga_puts("  0x00100000 – 0x01FFFFFF  :  Extended memory (~31 MB, usable)\n\n");
+}
+
+static void cmd_meminfo(void) {
+    uint32_t total_f = pmm_get_total_frames();
+    uint32_t used_f  = pmm_get_used_frames();
+    uint32_t free_f  = pmm_get_free_frames();
+
+    vga_puts_color("\n  Physical Memory Manager — Frame Statistics\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    vga_puts("  ──────────────────────────────────────────────────────\n");
+    vga_printf("  Frame size  : %d bytes (4 KB)\n", PMM_FRAME_SIZE);
+    vga_printf("  Total frames: %d  (%d MB)\n", total_f, (total_f * 4) / 1024);
+    vga_printf("  Used frames : %d  (%d KB)\n", used_f,  used_f  * 4);
+    vga_printf("  Free frames : %d  (%d KB)\n", free_f,  free_f  * 4);
+
+    vga_puts("\n  Usage: ");
+    draw_bar(used_f, total_f, 40, VGA_LIGHT_RED);
+    vga_printf(" %d%%\n", (used_f * 100) / (total_f ? total_f : 1));
+
+    /* Live demo: allocate 4 frames then free them */
+    vga_puts_color("\n  [Demo] Allocating 4 test frames...\n", VGA_YELLOW, VGA_BLACK);
+    phys_addr_t frames[4];
+    for (int i = 0; i < 4; i++) {
+        frames[i] = pmm_alloc_frame();
+        if (frames[i]) {
+            vga_printf("    Allocated frame at physical 0x%x\n", frames[i]);
+        } else {
+            vga_puts_color("    Out of memory!\n", VGA_LIGHT_RED, VGA_BLACK);
+        }
+    }
+
+    vga_puts_color("\n  [Demo] Freeing test frames...\n", VGA_LIGHT_GREEN, VGA_BLACK);
+    for (int i = 0; i < 4; i++) {
+        if (frames[i]) {
+            pmm_free_frame(frames[i]);
+            vga_printf("    Freed frame at physical 0x%x\n", frames[i]);
+        }
+    }
+
+    vga_printf("\n  Free frames after demo: %d (%d KB)\n\n",
+               pmm_get_free_frames(), pmm_get_free_frames() * 4);
 }
 
 static const char *proc_state_str(proc_state_t s) {
@@ -289,8 +344,7 @@ static void cmd_ps(void) {
             int sl = k_strlen(st);
             for (int s = 0; s < 13 - sl; s++) vga_putchar(' ');
             vga_printf("%d", table[i].ticks);
-            int tl = 1;
-            uint32_t t = table[i].ticks;
+            int tl = 1; uint32_t t = table[i].ticks;
             while (t >= 10) { tl++; t /= 10; }
             for (int s = 0; s < 8 - tl; s++) vga_putchar(' ');
             vga_printf("%s\n", table[i].name);
@@ -328,8 +382,7 @@ static void cmd_threads(void) {
             int sl = k_strlen(st);
             for (int s = 0; s < 13 - sl; s++) vga_putchar(' ');
             vga_printf("%d", table[i].ticks);
-            int tl = 1;
-            uint32_t t = table[i].ticks;
+            int tl = 1; uint32_t t = table[i].ticks;
             while (t >= 10) { tl++; t /= 10; }
             for (int s = 0; s < 8 - tl; s++) vga_putchar(' ');
             vga_printf("%s\n", table[i].name);
@@ -340,40 +393,30 @@ static void cmd_threads(void) {
 
 static void cmd_demo(void) {
     vga_puts_color("\n  [Stage 1 Demo] Spawning 2 concurrent processes...\n", VGA_YELLOW, VGA_BLACK);
-    vga_puts("  [P1] and [P2] will print concurrently. Run 'ps' to watch ticks.\n\n");
     process_create("p-worker1", worker1_task);
     process_create("p-worker2", worker2_task);
 }
 
 static void cmd_mutex_demo(void) {
-    vga_puts_color("\n  [Stage 2 – Mutex Demo] Two threads increment a shared counter\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  with mutex protection. Each thread increments 5 times (total=10).\n\n");
-
+    vga_puts_color("\n  [Stage 2 – Mutex Demo] Two threads increment shared counter (expect 10)\n",
+                   VGA_LIGHT_CYAN, VGA_BLACK);
     shared_counter = 0;
     mutex_init(&counter_mutex, "counter");
-
     thread_create("safe-t1", counter_thread_safe);
     thread_create("safe-t2", counter_thread_safe);
-
-    /* Wait for threads to finish (~100 ticks) */
     pit_sleep(120);
-
-    vga_printf("\n  Shared counter final value: %d (expected 10)\n\n", shared_counter);
+    vga_printf("\n  Final counter = %d (expected 10)\n\n", shared_counter);
 }
 
 static void cmd_prodcon(void) {
-    vga_puts_color("\n  [Stage 2 – Producer-Consumer] Semaphore-synchronized buffer\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts("  Buffer size: 4 | Producer: 6 items | Consumer: 6 items\n\n");
-
-    pc_head = 0;
-    pc_tail = 0;
+    vga_puts_color("\n  [Stage 2 – Producer-Consumer] Semaphore + Mutex on 4-slot buffer\n",
+                   VGA_LIGHT_CYAN, VGA_BLACK);
+    pc_head = 0; pc_tail = 0;
     sem_init(&sem_empty, BUFFER_SIZE, "empty");
     sem_init(&sem_full,  0,           "full");
     mutex_init(&pc_mutex, "pc-lock");
-
     thread_create("producer", producer_thread);
     thread_create("consumer", consumer_thread);
-
     vga_puts("\n  Threads spawned. Run 'threads' to observe state.\n\n");
 }
 
@@ -403,26 +446,24 @@ static void shell_run(void) {
         if (k_strcmp(cmd, "threads")    == 0) { cmd_threads();    continue; }
         if (k_strcmp(cmd, "mutex-demo") == 0) { cmd_mutex_demo(); continue; }
         if (k_strcmp(cmd, "prodcon")    == 0) { cmd_prodcon();    continue; }
+        if (k_strcmp(cmd, "meminfo")    == 0) { cmd_meminfo();    continue; }
         if (k_strcmp(cmd, "about")      == 0) { cmd_about();      continue; }
         if (k_strcmp(cmd, "mem")        == 0) { cmd_mem();        continue; }
 
         if (k_strncmp(cmd, "kill ", 5) == 0) { cmd_kill(k_ltrim(cmd + 5)); continue; }
         if (k_strcmp(cmd, "kill")      == 0) { cmd_kill("");               continue; }
-
         if (k_strncmp(cmd, "echo ", 5) == 0) { cmd_echo(k_ltrim(cmd + 5)); continue; }
         if (k_strcmp(cmd, "echo")      == 0) { cmd_echo("");                continue; }
-
         if (k_strncmp(cmd, "colour ", 7) == 0) { cmd_colour(k_ltrim(cmd + 7)); continue; }
         if (k_strcmp(cmd, "colour")      == 0) { cmd_colour("");               continue; }
 
-        if (k_strcmp(cmd, "meminfo") == 0 ||
-            k_strcmp(cmd, "free")    == 0 ||
-            k_strcmp(cmd, "ls")      == 0 ||
-            k_strcmp(cmd, "touch")   == 0 ||
-            k_strcmp(cmd, "write")   == 0 ||
-            k_strcmp(cmd, "rm")      == 0 ||
-            k_strcmp(cmd, "cat")     == 0) {
-            vga_puts_color("  [TODO] This command belongs to a later stage.\n",
+        if (k_strcmp(cmd, "free")  == 0 ||
+            k_strcmp(cmd, "ls")    == 0 ||
+            k_strcmp(cmd, "touch") == 0 ||
+            k_strcmp(cmd, "write") == 0 ||
+            k_strcmp(cmd, "rm")    == 0 ||
+            k_strcmp(cmd, "cat")   == 0) {
+            vga_puts_color("  [TODO] This command belongs to Stage 4 (file system).\n",
                            VGA_YELLOW, VGA_BLACK);
             continue;
         }
@@ -434,7 +475,7 @@ static void shell_run(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Kernel entry point – called from kernel_entry.asm
+ * Kernel entry point
  * --------------------------------------------------------------------------*/
 void kernel_main(void) {
     vga_init();
@@ -443,6 +484,7 @@ void kernel_main(void) {
     pit_init(PIT_FREQUENCY_HZ);
     scheduler_init();
     thread_init();
+    pmm_init();
 
     __asm__ __volatile__("sti");
 

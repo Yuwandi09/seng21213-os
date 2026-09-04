@@ -1,5 +1,5 @@
 # =============================================================================
-# SENG21213-OS :: Makefile (Stage 2)
+# SENG21213-OS :: Makefile (Stage 3)
 # =============================================================================
 
 AS       := nasm
@@ -37,7 +37,8 @@ KERNEL_C_SRCS   := kernel/kernel.c    \
                    kernel/scheduler.c \
                    kernel/thread.c    \
                    kernel/mutex.c     \
-                   kernel/semaphore.c
+                   kernel/semaphore.c \
+                   kernel/pmm.c
 
 KERNEL_C_OBJS   := $(patsubst kernel/%.c, build/%.o, $(KERNEL_C_SRCS))
 KERNEL_ELF      := build/kernel.elf
