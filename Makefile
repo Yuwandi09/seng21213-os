@@ -91,6 +91,10 @@ run: $(OS_IMAGE)
 	@echo "  Starting QEMU... (Close window or press Ctrl+A X to exit)"
 	$(QEMU) $(QEMUFLAGS)
 
+run-curses: $(OS_IMAGE)
+	@echo "  Starting QEMU in terminal mode... (Press Esc then 2 then quit, or Ctrl+C to exit)"
+	$(QEMU) $(QEMUFLAGS) -display curses
+
 run-debug: $(OS_IMAGE)
 	$(QEMU) $(QEMUFLAGS) -S -gdb tcp::1234 &
 	@echo "  QEMU paused. Connect GDB: target remote :1234"
