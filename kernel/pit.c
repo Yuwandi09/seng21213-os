@@ -39,6 +39,6 @@ uint32_t pit_get_ticks(void) {
 void pit_sleep(uint32_t ticks) {
     uint32_t end = system_ticks + ticks;
     while (system_ticks < end) {
-        __asm__ __volatile__("hlt");
+        schedule();
     }
 }

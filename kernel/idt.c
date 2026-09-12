@@ -109,8 +109,9 @@ void isr_handler(registers_t *regs) {
 }
 
 void irq_handler(registers_t *regs) {
+    /* Send EOI before handler in case handler switches context */
+    pic_send_eoi((uint8_t)(regs->int_no - 32));
     if (interrupt_handlers[regs->int_no] != NULL) {
         interrupt_handlers[regs->int_no](regs);
     }
-    pic_send_eoi((uint8_t)(regs->int_no - 32));
 }

@@ -68,11 +68,11 @@ thread_t *thread_create(const char *name, void (*entry)(void)) {
     uint32_t *stk = &t->stack[THREAD_STACK_SIZE / 4];
     *(--stk) = (uint32_t)thread_exit;  /* If entry() returns */
     *(--stk) = (uint32_t)entry;        /* EIP (switch_to ret lands here) */
-    *(--stk) = 0x00000202;             /* EFLAGS with IF set */
-    *(--stk) = 0;                      /* EDI */
-    *(--stk) = 0;                      /* ESI */
-    *(--stk) = 0;                      /* EBX */
     *(--stk) = 0;                      /* EBP */
+    *(--stk) = 0;                      /* EBX */
+    *(--stk) = 0;                      /* ESI */
+    *(--stk) = 0;                      /* EDI */
+    *(--stk) = 0x00000202;             /* EFLAGS: popped first by popfd */
     t->esp = (uint32_t)stk;
 
     return t;

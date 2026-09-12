@@ -58,11 +58,11 @@ pcb_t *process_create(const char *name, void (*entry)(void)) {
     uint32_t *stk = &p->stack[STACK_SIZE / 4];
     *(--stk) = (uint32_t)process_exit; /* Return address if entry() exits */
     *(--stk) = (uint32_t)entry;        /* Initial EIP for switch_to ret */
-    *(--stk) = 0x00000202;             /* EFLAGS: Interrupt Flag (IF) enabled */
-    *(--stk) = 0;                      /* EDI */
-    *(--stk) = 0;                      /* ESI */
-    *(--stk) = 0;                      /* EBX */
     *(--stk) = 0;                      /* EBP */
+    *(--stk) = 0;                      /* EBX */
+    *(--stk) = 0;                      /* ESI */
+    *(--stk) = 0;                      /* EDI */
+    *(--stk) = 0x00000202;             /* EFLAGS: popped first by popfd */
 
     p->esp = (uint32_t)stk;
     return p;
