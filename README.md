@@ -2,8 +2,7 @@
 
 > **Course**: SENG 21213 – Computer Architecture & Operating Systems  
 > **Student Name**: Yuwandi Sandanayake  
-> **Student Number**: SE/2023/047  
-> **Department**: Department of Software Engineering, Faculty of Engineering  
+> **Student Number**: SE/2023/047   
 > **Repository**: [https://github.com/Yuwandi09/seng21213-os](https://github.com/Yuwandi09/seng21213-os)
 
 ---
